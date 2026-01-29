@@ -51,6 +51,12 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
         
         // UI reference - Direct TextMeshPro object for displaying syllables
         [SerializeField] private TextMeshProUGUI syllableDisplayText;
+        
+        // Name of the syllable display object in Main Game scene
+        [SerializeField] private string mainGameSyllableObjectName = "Main_Syllable";
+        
+        // Flag to use Main Game UI instead of local UI
+        [SerializeField] private bool useMainGameUI = true;
 
     // Threshold between THUMB_IP and INDEX_MCP to consider the thumb extended
     // Public so you can tune it in the Unity Inspector (normalized coordinates)
@@ -313,6 +319,24 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
         /// </summary>
         private void Update()
         {
+            // Try to find Main Game UI if needed
+            if (useMainGameUI && syllableDisplayText == null && !string.IsNullOrEmpty(mainGameSyllableObjectName))
+            {
+                GameObject mainSyllableObj = GameObject.Find(mainGameSyllableObjectName);
+                if (mainSyllableObj != null)
+                {
+                    syllableDisplayText = mainSyllableObj.GetComponent<TextMeshProUGUI>();
+                    if (syllableDisplayText != null)
+                    {
+                        Debug.Log($"[HandShapeRecognizer] Connected to Main Game syllable display: {mainGameSyllableObjectName}");
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[HandShapeRecognizer] Found '{mainGameSyllableObjectName}' but it has no TextMeshProUGUI component!");
+                    }
+                }
+            }
+            
             if (needsUIUpdate && syllableDisplayText != null)
             {
                 syllableDisplayText.text = pendingSyllableText;
