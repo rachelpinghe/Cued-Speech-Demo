@@ -51,6 +51,17 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
         
         // UI reference - Direct TextMeshPro object for displaying syllables
         [SerializeField] private TextMeshProUGUI syllableDisplayText;
+
+    // Threshold between THUMB_IP and INDEX_MCP to consider the thumb extended
+    // Public so you can tune it in the Unity Inspector (normalized coordinates)
+    public float thumbIpToIndexMcpThreshold = 0.12f;
+    public float tipToTipThreshold = 0.1f;
+    
+    // Number of consecutive identical detections required to confirm a handshape
+    [SerializeField] private int confirmationThreshold = 2;
+    // State for consecutive-confirmation logic
+    private HandShape lastCandidateShape = HandShape.None;
+    private int consecutiveDetections = 0;
         
         private HandShape currentHandShape = HandShape.None;
         private HandShape previousHandShape = HandShape.None;
@@ -100,11 +111,25 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
             // Process the first detected hand
             var landmarks = result.handLandmarks[0];
             
-            // Recognize the handshape
+            // Recognize the handshape (candidate for this frame)
             HandShape detectedShape = RecognizeHandShape(landmarks);
-            
-            // Update current handshape
-            currentHandShape = detectedShape;
+
+            // Consecutive-confirmation: increment or reset the consecutive counter
+            if (detectedShape == lastCandidateShape)
+            {
+                consecutiveDetections++;
+            }
+            else
+            {
+                lastCandidateShape = detectedShape;
+                consecutiveDetections = 1;
+            }
+
+            // Only consider the shape confirmed after enough consecutive detections
+            HandShape confirmedShape = (consecutiveDetections >= Mathf.Max(1, confirmationThreshold)) ? detectedShape : HandShape.None;
+
+            // Update current handshape to the confirmed shape (or None if not yet confirmed)
+            currentHandShape = confirmedShape;
             
             var now = System.DateTime.Now;
             var timeSinceLastDetection = (now - lastDetectionDateTime).TotalSeconds;
@@ -116,7 +141,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
                 previousHandShape = HandShape.None;
             }
             
-            // Output syllable if handshape changed and cooldown passed
+            // Output syllable if a confirmed handshape changed and cooldown passed
             if (timeSinceLastDetection > detectionCooldown)
             {
                 if (currentHandShape != HandShape.None && currentHandShape != previousHandShape)
@@ -125,6 +150,9 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
                     previousHandShape = currentHandShape;
                     lastDetectionDateTime = now;
                     lastShapeChangeDateTime = now;
+                    // Reset consecutive detections so a repeat requires confirmation again
+                    consecutiveDetections = 0;
+                    lastCandidateShape = HandShape.None;
                 }
             }
         }
@@ -140,6 +168,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
             bool middleExtended = IsFingerExtended(landmarks, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP);
             bool ringExtended = IsFingerExtended(landmarks, RING_MCP, RING_PIP, RING_DIP, RING_TIP);
             bool pinkyExtended = IsFingerExtended(landmarks, PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP);
+            bool indexSeparated = IsIndexSeperated(landmarks);
 
             // Recognize handshape based on finger combination
             // You can customize these patterns based on your specific cued speech handshapes
@@ -151,7 +180,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
             }
             
             // Shape 2: [k,q,z]
-            if (!thumbExtended && indexExtended && middleExtended && !ringExtended && !pinkyExtended)
+            if (!thumbExtended && indexExtended && middleExtended && !ringExtended && !pinkyExtended &&!indexSeparated)
             {
                 return HandShape.Shape2;
             }
@@ -187,7 +216,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
             }
             
             // Shape 8: [y,c,sh]
-        if (!thumbExtended && indexExtended && middleExtended && !ringExtended && !pinkyExtended)
+        if (!thumbExtended && indexExtended && middleExtended && !ringExtended && !pinkyExtended && indexSeparated)
             {
                 return HandShape.Shape8;
             }
@@ -224,22 +253,40 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
         /// </summary>
         private bool IsThumbExtended(NormalizedLandmarks landmarks)
         {
-            var landmarkList = landmarks.landmarks;
-            
-            // Calculate distance from wrist to thumb tip
-            float thumbTipDistance = Vector3.Distance(
-                new Vector3(landmarkList[WRIST].x, landmarkList[WRIST].y, landmarkList[WRIST].z),
-                new Vector3(landmarkList[THUMB_TIP].x, landmarkList[THUMB_TIP].y, landmarkList[THUMB_TIP].z)
-            );
-            
-            // Calculate distance from wrist to thumb MCP
-            float thumbMcpDistance = Vector3.Distance(
-                new Vector3(landmarkList[WRIST].x, landmarkList[WRIST].y, landmarkList[WRIST].z),
-                new Vector3(landmarkList[THUMB_MCP].x, landmarkList[THUMB_MCP].y, landmarkList[THUMB_MCP].z)
-            );
-            
-            // Thumb is extended if tip is significantly farther from wrist than MCP
-            return thumbTipDistance > thumbMcpDistance * 1.8f;
+            // Get landmark list and ensure it's available
+            var L = landmarks.landmarks;
+            if (L == null) return false;
+
+            // Safety: ensure indices exist
+            if (L.Count <= Mathf.Max(THUMB_IP, INDEX_MCP)) return false;
+
+            Vector3 thumbIp = new Vector3(L[THUMB_IP].x, L[THUMB_IP].y, L[THUMB_IP].z);
+            Vector3 indexMcp = new Vector3(L[INDEX_MCP].x, L[INDEX_MCP].y, L[INDEX_MCP].z);
+
+            float dist = Vector3.Distance(thumbIp, indexMcp);
+
+            // Print the computed distance to the Unity Console so you can tune the threshold
+            // Debug.Log($"[ThumbDist] {dist:F4}");
+
+            // Consider thumb extended when the IP-to-indexMCP distance exceeds the public threshold
+            return dist > thumbIpToIndexMcpThreshold;
+        }
+
+        private bool IsIndexSeperated(NormalizedLandmarks landmarks)
+        {
+            var L = landmarks.landmarks;
+            if (L == null) return false;
+
+            // Safety: ensure indices exist
+            if (L.Count <= Mathf.Max(INDEX_TIP, MIDDLE_TIP)) return false;
+
+            Vector3 indexTip = new Vector3(L[INDEX_TIP].x, L[INDEX_TIP].y, L[INDEX_TIP].z);
+            Vector3 middleTip = new Vector3(L[MIDDLE_TIP].x, L[MIDDLE_TIP].y, L[MIDDLE_TIP].z);
+
+            float dist = Vector3.Distance(indexTip, middleTip);
+
+            // Consider index separated when the TIP-to-TIP distance exceeds a threshold
+            return dist > tipToTipThreshold; // Adjust threshold as needed
         }
 
         /// <summary>
